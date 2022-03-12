@@ -787,7 +787,7 @@ mod tests {
         g.progress_street();
 
         // dbg!(&g);
-        dbg!("find winners")
+        dbg!("find winners");
 
         g.find_winner();
 
