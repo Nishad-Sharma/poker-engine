@@ -1,7 +1,15 @@
+use std::cmp::Reverse;
+use std::ptr::null;
 use strum_macros::EnumIter;
 use strum::IntoEnumIterator;
 use rand::thread_rng;
 use rand::seq::SliceRandom;
+use itertools::{cloned, Itertools};
+use crate::card::{Card, Rank};
+use crate::HandRanking::{FourOfAKind, StraightFlush};
+
+
+mod card;
 
 #[derive(Eq,PartialEq,Debug,Clone)]
 struct Player {
@@ -10,12 +18,14 @@ struct Player {
     current_bet: u64,
     has_folded: bool,
     final_action: bool,
-    hole_cards: Vec<Card>
+    hole_cards: Vec<card::Card>,
+    strongest_combo: Vec<card::Card>,
+    hand_rank: HandRanking
 }
 
 impl Player {
     fn new(name:String, chip_stack:u64) -> Player {
-        Player{name, chip_stack, current_bet: 0, has_folded: false, final_action: false, hole_cards: Vec::with_capacity(2)}
+        Player{name, chip_stack, current_bet: 0, has_folded: false, final_action: false, hole_cards: Vec::with_capacity(2), strongest_combo: Vec::new(), hand_rank: HandRanking::HighCard }
     }
 }
 
@@ -37,61 +47,19 @@ enum GameStreet {
     SHOWDOWN
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, EnumIter)]
-enum Card {
-    HeartA,
-    Heart2,
-    Heart3,
-    Heart4,
-    Heart5,
-    Heart6,
-    Heart7,
-    Heart8,
-    Heart9,
-    HeartT,
-    HeartJ,
-    HeartQ,
-    HeartK,
-    SpadeA,
-    Spade2,
-    Spade3,
-    Spade4,
-    Spade5,
-    Spade6,
-    Spade7,
-    Spade8,
-    Spade9,
-    SpadeT,
-    SpadeJ,
-    SpadeQ,
-    SpadeK,
-    DiamondA,
-    Diamond2,
-    Diamond3,
-    Diamond4,
-    Diamond5,
-    Diamond6,
-    Diamond7,
-    Diamond8,
-    Diamond9,
-    DiamondT,
-    DiamondJ,
-    DiamondQ,
-    DiamondK,
-    ClubA,
-    Club2,
-    Club3,
-    Club4,
-    Club5,
-    Club6,
-    Club7,
-    Club8,
-    Club9,
-    ClubT,
-    ClubJ,
-    ClubQ,
-    ClubK
+#[derive(Debug,Eq,PartialEq,Clone)]
+enum HandRanking {
+    StraightFlush = 8,
+    FourOfAKind = 7,
+    FullHouse = 6,
+    Flush = 5,
+    Straight = 4,
+    ThreeOfAKind = 3,
+    TwoPair = 2,
+    Pair = 1,
+    HighCard = 0,
 }
+
 
 #[derive(Debug)]
 struct Action {
@@ -117,13 +85,14 @@ struct Game {
     pub current_bet: u64,
     pub turn_marker: u64,
     pub street: GameStreet,
-    pub deck: Vec<Card>,
-    pub board: Vec<Card>,
+    pub deck: Vec<card::Card>,
+    pub board: Vec<card::Card>,
+    pub winners: Vec<Player>,
 }
 
 impl Game {
     fn new(start_stack:u64, big_blind:u64) -> Game {
-        Game{ players: Vec::with_capacity(9), start_stack, button:0, actions: Vec::new(), big_blind, pot: 0, previous_raise: 0, previous_bet: 0, current_bet: 0, turn_marker: 1, street: GameStreet::PRE, deck: Vec::new(), board: Vec::with_capacity(5) }
+        Game{players: Vec::with_capacity(9), start_stack, button:0, actions: Vec::new(), big_blind, pot: 0, previous_raise: 0, previous_bet: 0, current_bet: 0, turn_marker: 1, street: GameStreet::PRE, deck: Vec::new(), board: Vec::with_capacity(5), winners: Vec::new() }
     }
 
     fn add_player(&mut self, name:String) {
@@ -135,11 +104,7 @@ impl Game {
 
         self.turn_marker = self.button+1;
         for i in (1..3).step_by(1) {
-            // dbg!(i);
             for j in (1..self.players.len()+1).step_by(1) {
-                // dbg!(j);
-                // dbg!(&self.players[self.turn_marker as usize].name);
-                // dbg!(&self.turn_marker);
                 self.increment_turn();
                 self.players[self.turn_marker as usize].hole_cards.push(self.deck.pop().unwrap());
             }
@@ -148,26 +113,397 @@ impl Game {
     }
 
     fn init_deck(&mut self) {
-        for c in Card::iter(){
-            self.deck.push(c);
-        }
-        self.deck.shuffle(&mut thread_rng());
+        self.deck = card::Card::init_deck();
     }
 
-    // fn find_winner(&mut self) {
-    //     let mut possible_winners = Vec::new();
-    //     for p in self.players.iter(){
-    //         if !(p.has_folded) {
-    //             possible_winners.push(p.clone(0));
-    //         }
-    //     }
-    //     let mut
-    // }
+    fn find_winner(&mut self) -> Result<(), InvalidActionError> {
+        if self.street != GameStreet::SHOWDOWN {
+            return Err(InvalidActionError);
+        }
+        let mut possible_winners = Vec::new();
+        for p in self.players.iter(){
+            if !(p.has_folded) {
+                possible_winners.push(p.clone());
+            }
+        }
+        let mut best_rank = HandRanking::HighCard;
 
-    // fn evaluate_hand(&mut self, hand: Vec<Card>) {
-    //     let mut cards = self.board.clone();
-    //     cards.append(&mut hand.clone());
-    // }
+        let mut i = 0;
+
+        while i < self.players.len() {
+            let best_hand = self.evaluate_hand(self.players[i].clone().hole_cards);
+            self.players[i].strongest_combo = best_hand.clone();
+            self.players[i].hand_rank = self.rank_five_card_combo(best_hand.clone());
+
+            if self.players[i].hand_rank.clone() as u8 > best_rank.clone() as u8 {
+                best_rank = self.players[i].hand_rank.clone();
+            }
+            i += 1;
+        }
+
+        for mut p in possible_winners.iter_mut() {
+            let best_hand = self.evaluate_hand(p.clone().hole_cards);
+            p.strongest_combo = best_hand.clone();
+            p.hand_rank = self.rank_five_card_combo(best_hand.clone());
+            if p.hand_rank.clone() as u8 > best_rank.clone() as u8 {
+                best_rank = p.hand_rank.clone();
+            }
+        }
+        possible_winners.retain(|x| x.hand_rank == best_rank.clone());
+        if possible_winners.len() == 1 {
+            self.winners.push(possible_winners[0].clone());
+        } else if best_rank == HandRanking::StraightFlush {
+            let mut highest_rank = 0;
+            for p in possible_winners.clone() {
+                if highest_rank < self.rank_straight(p.clone().strongest_combo) {
+                    highest_rank = self.rank_straight(p.clone().strongest_combo);
+                }
+            }
+            for p in possible_winners.clone() {
+                if self.rank_straight(p.clone().strongest_combo) == highest_rank {
+                    self.winners.push(p.clone());
+                }
+            }
+        } else if best_rank == HandRanking::FourOfAKind {
+            let mut highest_rank = 0;
+            for p in possible_winners.clone() {
+                if highest_rank < self.rank_four_of_a_kind(p.clone().strongest_combo) {
+                    highest_rank = self.rank_four_of_a_kind(p.clone().strongest_combo);
+                }
+            }
+            for p in possible_winners.clone() {
+                if self.rank_four_of_a_kind(p.clone().strongest_combo) == highest_rank {
+                    self.winners.push(p.clone());
+                }
+            }
+        } else if best_rank == HandRanking::FullHouse {
+            let mut highest_rank = 0;
+            for p in possible_winners.clone() {
+                if highest_rank < self.rank_full_house(p.clone().strongest_combo) {
+                    highest_rank = self.rank_full_house(p.clone().strongest_combo);
+                }
+            }
+            for p in possible_winners.clone() {
+                if self.rank_full_house(p.clone().strongest_combo) == highest_rank {
+                    self.winners.push(p.clone());
+                }
+            }
+        } else if best_rank == HandRanking::Flush {
+            let mut highest_rank = 0;
+            for p in possible_winners.clone() {
+                if highest_rank < self.rank_flush(p.clone().strongest_combo) {
+                    highest_rank = self.rank_flush(p.clone().strongest_combo);
+                }
+            }
+            for p in possible_winners.clone() {
+                if self.rank_flush(p.clone().strongest_combo) == highest_rank {
+                    self.winners.push(p.clone());
+                }
+            }
+        } else if best_rank == HandRanking::Straight {
+            let mut highest_rank = 0;
+            for p in possible_winners.clone() {
+                if highest_rank < self.rank_straight(p.clone().strongest_combo) {
+                    highest_rank = self.rank_straight(p.clone().strongest_combo);
+                }
+            }
+            for p in possible_winners.clone() {
+                if self.rank_straight(p.clone().strongest_combo) == highest_rank {
+                    self.winners.push(p.clone());
+                }
+            }
+        } else if best_rank == HandRanking::ThreeOfAKind {
+            let mut highest_rank = 0;
+            for p in possible_winners.clone() {
+                if highest_rank < self.rank_three_of_a_kind(p.clone().strongest_combo) {
+                    highest_rank = self.rank_three_of_a_kind(p.clone().strongest_combo);
+                }
+            }
+            for p in possible_winners.clone() {
+                if self.rank_three_of_a_kind(p.clone().strongest_combo) == highest_rank {
+                    self.winners.push(p.clone());
+                }
+            }
+        } else if best_rank == HandRanking::TwoPair {
+            let mut highest_rank = 0;
+            for p in possible_winners.clone() {
+                if highest_rank < self.rank_two_pair(p.clone().strongest_combo) {
+                    highest_rank = self.rank_two_pair(p.clone().strongest_combo);
+                }
+            }
+            for p in possible_winners.clone() {
+                if self.rank_two_pair(p.clone().strongest_combo) == highest_rank {
+                    self.winners.push(p.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn rank_high_card(&mut self, hand: Vec<card::Card>) -> u64 {
+        let mut rank = 0;
+        for h in hand.clone() {
+            rank += h.clone().get_rank() as u8;
+        }
+        return rank as u64;
+    }
+
+    fn rank_pair(&mut self, hand: Vec<card::Card>) -> u64 {
+        let mut rank = 0;
+        if hand[0].clone().get_rank() as u8 == hand[1].clone().get_rank() as u8 {
+            rank = hand[0].clone().get_rank() as u64 * 1000 + hand[2].clone().get_rank() as u64 + hand[3].clone().get_rank() as u64 + hand[4].clone().get_rank() as u64;
+        } else if hand[1].clone().get_rank() as u64 == hand[2].clone().get_rank() as u64 {
+            rank = hand[1].clone().get_rank() as u64 * 1000 + hand[0].clone().get_rank() as u64 + hand[3].clone().get_rank() as u64 + hand[4].clone().get_rank() as u64;
+        } else if hand[2].clone().get_rank() as u64 == hand[3].clone().get_rank() as u64 {
+            rank = hand[2].clone().get_rank() as u64 * 1000 + hand[0].clone().get_rank() as u64 + hand[1].clone().get_rank() as u64 + hand[4].clone().get_rank() as u64;
+        } else if hand[3].clone().get_rank() as u64 == hand[4].clone().get_rank() as u64 {
+            rank = hand[3].clone().get_rank() as u64 * 1000 + hand[0].clone().get_rank() as u64 + hand[1].clone().get_rank() as u64 + hand[2].clone().get_rank() as u64;
+        }
+        return rank as u64;
+    }
+
+    fn rank_two_pair(&mut self, hand: Vec<card::Card>) -> u64 {
+        let mut rank = 0;
+        if hand[0].clone().get_rank() as u8 == hand[1].clone().get_rank() as u8 &&
+           hand[2].clone().get_rank() as u8 == hand[3].clone().get_rank() as u8 {
+            rank = hand[2].clone().get_rank() as u64 * 1000 + hand[0].clone().get_rank() as u64 * 100 + hand[4].clone().get_rank() as u64;
+        } else if hand[0].clone().get_rank() as u8 == hand[1].clone().get_rank() as u8 &&
+           hand[3].clone().get_rank() as u8 == hand[4].clone().get_rank() as u8 {
+            rank = hand[3].clone().get_rank() as u64 * 1000 + hand[0].clone().get_rank() as u64 * 100 + hand[2].clone().get_rank() as u64;
+        } else if hand[1].clone().get_rank() as u8 == hand[2].clone().get_rank() as u8 &&
+           hand[3].clone().get_rank() as u8 == hand[4].clone().get_rank() as u8 {
+            rank = hand[3].clone().get_rank() as u64 * 1000 + hand[1].clone().get_rank() as u64 * 100 + hand[0].clone().get_rank() as u64;
+        }
+        return rank as u64;
+    }
+
+    fn rank_three_of_a_kind(&mut self, hand: Vec<card::Card>) -> u64 {
+        let mut rank = 0;
+        if hand[0].clone().get_rank() as u8 == hand[1].clone().get_rank() as u8 &&
+           hand[1].clone().get_rank() as u8 == hand[2].clone().get_rank() as u8 {
+            rank = hand[0].clone().get_rank() as u64 * 1000 + hand[3].clone().get_rank() as u64 + hand[4].clone().get_rank() as u64;
+        } else if hand[1].clone().get_rank() as u8 == hand[2].clone().get_rank() as u8 &&
+           hand[2].clone().get_rank() as u8 == hand[3].clone().get_rank() as u8 {
+            rank = hand[1].clone().get_rank() as u64 * 1000 + hand[0].clone().get_rank() as u64 + hand[4].clone().get_rank() as u64;
+        } else if hand[2].clone().get_rank() as u8 == hand[3].clone().get_rank() as u8 &&
+           hand[3].clone().get_rank() as u8 == hand[4].clone().get_rank() as u8 {
+            rank = hand[2].clone().get_rank() as u64 * 1000 + hand[0].clone().get_rank() as u64 + hand[1].clone().get_rank() as u64;
+
+        }
+        return rank as u64;
+    }
+
+    fn rank_flush(&mut self, hand: Vec<card::Card>) -> u64 {
+        let mut rank = 0;
+        for h in hand.clone() {
+            rank += h.clone().get_rank() as u8;
+        }
+        return rank as u64;
+    }
+
+    fn rank_full_house(&mut self, hand: Vec<card::Card>) -> u64 {
+        let mut rank = 0;
+        if hand[0].clone().get_rank() as u8 == hand[1].clone().get_rank() as u8 && hand[1].clone().get_rank() as u8 == hand[2].clone().get_rank() as u8 {
+            rank = (hand[2].clone().get_rank() as u64 * 1000) + hand[4].clone().get_rank() as u64;
+        } else {
+            rank = (hand[3].clone().get_rank() as u64 * 1000) + hand[0].clone().get_rank() as u64;
+        }
+        return rank as u64
+    }
+
+    fn rank_four_of_a_kind(&mut self, hand: Vec<card::Card>) -> u64 {
+        let mut rank = 0;
+        if hand[0].clone().get_rank() as u8 == hand[1].clone().get_rank() as u8 {
+            rank = (hand[2].clone().get_rank() as u64 * 1000) + hand[4].clone().get_rank() as u64;
+        } else {
+            rank = (hand[2].clone().get_rank() as u64 * 1000) + hand[0].clone().get_rank() as u64;
+        }
+        return rank as u64;
+    }
+
+    fn rank_straight(&mut self, hand:Vec<card::Card>) -> u64 {
+        let mut rank = 0;
+        if hand[4].clone().get_rank() == Rank::Ace && hand[0].clone().get_rank() == Rank::Two {
+            rank = 1;
+        } else {
+            rank = hand[2].clone().get_rank() as u8;
+        }
+        return rank as u64;
+    }
+
+    fn evaluate_hand(&mut self, hand: Vec<card::Card>) -> Vec<card::Card> {
+        let mut cards = self.board.clone();
+        cards.append(&mut hand.clone());
+        cards.sort_by_key(|c| c.clone().get_suit());
+        cards.sort_by_key(|c| c.clone().get_rank());
+        let it = cards.into_iter().combinations(5);
+
+        let mut best_hand_rank = HandRanking::HighCard;
+        let mut best_hands = Vec::new();
+
+        for i in it {
+            let r  = self.rank_five_card_combo(i.clone());
+            if (r.clone() as u8) > (best_hand_rank.clone() as u8) {
+                best_hand_rank = r.clone();
+                best_hands.clear();
+                best_hands.push(i.clone());
+            } else if (r.clone() as u8) == (best_hand_rank.clone() as u8) {
+                best_hands.push(i.clone());
+            }
+        }
+
+        if (best_hand_rank == HandRanking::HighCard) || best_hand_rank == HandRanking::Pair || best_hand_rank == HandRanking::TwoPair || best_hand_rank == HandRanking::ThreeOfAKind || best_hand_rank == HandRanking::Flush || best_hand_rank == HandRanking::FullHouse || best_hand_rank == HandRanking::FourOfAKind {
+            let best_hand = best_hands[best_hands.len()-1].clone();
+            return best_hand.clone();
+        } else if best_hand_rank == HandRanking::Straight || best_hand_rank == HandRanking::StraightFlush {
+            let best_hand = self.best_straight_card_combo(best_hands.clone());
+            return best_hand.clone();
+        }
+        return Vec::new();
+
+    }
+
+    fn rank_five_card_combo(&mut self, mut cards: Vec<card::Card>) -> HandRanking {
+        cards.sort_by_key(|c| c.clone().get_suit());
+        cards.sort_by_key(|c| c.clone().get_rank());
+
+        if self.is_straight_flush(cards.clone()) {
+            return HandRanking::StraightFlush;
+        } else if self.is_four_of_a_kind(cards.clone()) {
+            return HandRanking::FourOfAKind;
+        } else if self.is_full_house(cards.clone()) {
+            return HandRanking::FullHouse;
+        } else if self.is_flush(cards.clone()) {
+            return HandRanking::Flush;
+        } else if self.is_straight(cards.clone()) {
+            return HandRanking::Straight
+        } else if self.is_three_of_a_kind(cards.clone()) {
+            return HandRanking::ThreeOfAKind
+        } else if self.is_two_pair(cards.clone()) {
+            return HandRanking::TwoPair
+        } else if self.is_pair(cards.clone()) {
+            return HandRanking::Pair
+        }
+        return HandRanking::HighCard
+    }
+
+    fn best_straight_card_combo(&mut self, mut combos: Vec<Vec<card::Card>>) -> Vec<card::Card> {
+        if combos.len() > 1 {
+            let mut highest_rank = 0;
+            let mut winning_combo = Vec::new();
+            for combo in combos.clone() {
+                if combo[2].clone().get_rank() as u8 > highest_rank {
+                    highest_rank = combo[2].clone().get_rank() as u8;
+                    winning_combo.clear();
+                    winning_combo = combo.clone();
+                }
+            }
+            return winning_combo.clone();
+        }
+        return combos[0].clone();
+    }
+
+    fn is_pair(&mut self, cards: Vec<card::Card>) -> bool {
+        if cards[0].clone().get_rank() as u8 == cards[1].clone().get_rank() as u8 {
+            return true;
+        } else if cards[1].clone().get_rank() as u8 == cards[2].clone().get_rank() as u8 {
+            return true;
+        } else if cards[2].clone().get_rank() as u8 == cards[3].clone().get_rank() as u8 {
+            return true;
+        } else if cards[3].clone().get_rank() as u8 == cards[4].clone().get_rank() as u8 {
+            return true;
+        }
+        return false;
+    }
+
+    fn is_two_pair(&mut self, cards: Vec<card::Card>) -> bool {
+        if (cards[0].clone().get_rank() as u8 == cards[1].clone().get_rank() as u8) &&
+            (cards[2].clone().get_rank() as u8 == cards[3].clone().get_rank() as u8) {
+            return true;
+        } else if (cards[1].clone().get_rank() as u8 == cards[2].clone().get_rank() as u8) &&
+            (cards[3].clone().get_rank() as u8 == cards[4].clone().get_rank() as u8) {
+            return true;
+        } else if (cards[0].clone().get_rank() as u8 == cards[1].clone().get_rank() as u8) &&
+            (cards[3].clone().get_rank() as u8 == cards[4].clone().get_rank() as u8) {
+            return true;
+        }
+        return false;
+    }
+
+    fn is_three_of_a_kind(&mut self, cards: Vec<card::Card>) -> bool {
+        if (cards[0].clone().get_rank() as u8 == cards[1].clone().get_rank() as u8) &&
+            (cards[1].clone().get_rank() as u8 == cards[2].clone().get_rank() as u8) {
+            return true;
+        } else if (cards[1].clone().get_rank() as u8 == cards[2].clone().get_rank() as u8) &&
+            (cards[2].clone().get_rank() as u8 == cards[3].clone().get_rank() as u8) {
+            return true;
+        } else if (cards[2].clone().get_rank() as u8 == cards[3].clone().get_rank() as u8) &&
+            (cards[3].clone().get_rank() as u8 == cards[4].clone().get_rank() as u8) {
+            return true;
+        }
+        return false;
+    }
+
+    fn is_straight(&mut self, cards: Vec<card::Card>) -> bool {
+        if cards[4].clone().get_rank() == Rank::Ace && cards[0].clone().get_rank() == Rank::Two {
+            for i in 0..3 {
+                if (cards[i].clone().get_rank() as u8 + 1 as u8) != (cards[i+1].clone().get_rank() as u8) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        for i in 0..4 {
+            if (cards[i].clone().get_rank() as u8 + 1 as u8) != (cards[i+1].clone().get_rank() as u8) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    fn is_flush(&mut self, cards: Vec<card::Card>) -> bool {
+        let first_suit = cards[0].clone().get_suit();
+        for c in cards.clone() {
+            if c.clone().get_suit() != first_suit {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    fn is_full_house(&mut self, cards: Vec<card::Card>) -> bool {
+        if (cards[0].clone().get_rank() as u8 == cards[1].clone().get_rank() as u8) &&
+            (cards[2].clone().get_rank() as u8 == cards[3].clone().get_rank() as u8) &&
+            (cards[3].clone().get_rank() as u8 == cards[4].clone().get_rank() as u8) {
+            return true;
+        } else if (cards[0].clone().get_rank() as u8 == cards[1].clone().get_rank() as u8) &&
+            (cards[1].clone().get_rank() as u8 == cards[2].clone().get_rank() as u8) &&
+            (cards[3].clone().get_rank() as u8 == cards[4].clone().get_rank() as u8) {
+            return true;
+        }
+        return false;
+    }
+
+    fn is_four_of_a_kind(&mut self, cards: Vec<card::Card>) -> bool {
+        if (cards[0].clone().get_rank() as u8 == cards[1].clone().get_rank() as u8) &&
+           (cards[1].clone().get_rank() as u8 == cards[2].clone().get_rank() as u8) &&
+           (cards[2].clone().get_rank() as u8 == cards[3].clone().get_rank() as u8) {
+            return true;
+        } else if (cards[1].clone().get_rank() as u8 == cards[2].clone().get_rank() as u8) &&
+           (cards[2].clone().get_rank() as u8 == cards[3].clone().get_rank() as u8) &&
+           (cards[3].clone().get_rank() as u8 == cards[4].clone().get_rank() as u8) {
+            return true;
+        }
+        return false;
+    }
+
+    fn is_straight_flush(&mut self, cards: Vec<card::Card>) -> bool {
+        if self.is_straight(cards.clone()) && self.is_flush(cards.clone()) {
+            return true;
+        }
+        return false;
+    }
 
     fn reset_current_bet(&mut self) {
         for mut p in self.players.iter_mut() {
@@ -181,7 +517,6 @@ impl Game {
                 return;
             }
         }
-        // otherwise progress street
         if self.street == GameStreet::PRE {
             self.street = GameStreet::FLOP;
             self.deck.pop();
@@ -202,7 +537,7 @@ impl Game {
         } else if self.street == GameStreet::RIVER {
             self.street = GameStreet::SHOWDOWN;
         } else if self.street == GameStreet::SHOWDOWN {
-            return; // ERROR NO STREET AFTER SHOWDONW?
+            return;
         }
         self.reset_final_action();
         self.reset_current_bet();
@@ -213,11 +548,6 @@ impl Game {
         self.previous_raise = 0;
 
     }
-
-    // need a check for all ins->progress to showdown?
-    // fn showdown_time(&mut self) {
-    //
-    // }
 
     fn place_blind(&mut self, mut bet: u64) {
         if self.players[self.turn_marker as usize].chip_stack < bet {
@@ -400,19 +730,12 @@ impl Game {
 }
 
 
-
-
-
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc::channel;
-    use crate::{Card, Game, Player};
+    use crate::{card, card::Card, Game, Player};
+    use crate::card::{Rank, Suit};
 
-    // #[test]
-    // fn it_works() {
-    //     let result = 2 + 2;
-    //     assert_eq!(result, 4);
-    // }
     #[test]
     fn init_game() {
         let mut g = Game::new(5000, 100);
@@ -423,50 +746,55 @@ mod tests {
         g.add_player(String::from("Fred"));
         g.add_player(String::from("George"));
 
-        // let c = Card::new()
         g.init_deck();
 
-        // let p = *g.players.get(&Player { name: "Alice".to_string() }).unwrap();
         // Place blinds
         g.force_blinds();
 
         g.deal_hole_cards();
-        // g.progress_street();
 
-        dbg!(&g);
-
-        // let mut ans = g.raise(g.players[g.turn_marker as usize].clone(), 200);
-        // dbg!(ans);
-        // ans = g.call(g.players[g.turn_marker as usize].clone());
-        // ans = g.raise(g.players[g.turn_marker as usize].clone(), 400);
         let mut ans = g.call(g.players[g.turn_marker as usize].clone().name);
         ans = g.call(g.players[g.turn_marker as usize].clone().name);
         ans = g.call(g.players[g.turn_marker as usize].clone().name);
         ans = g.call(g.players[g.turn_marker as usize].clone().name);
         ans = g.call(g.players[g.turn_marker as usize].clone().name);
-        // // ans = g.call(g.players[g.turn_marker as usize].clone());
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
         g.progress_street();
+        // dbg!(&g);
+
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        g.progress_street();
+
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        g.progress_street();
+
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        ans = g.check(g.players[g.turn_marker as usize].clone().name);
+        g.progress_street();
+
+        // dbg!(&g);
+        dbg!("find winners")
+
+        g.find_winner();
+
         dbg!(&g);
+        dbg!(&g.winners.len());
 
-        ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        g.progress_street();
-
-        ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        g.progress_street();
-
-        dbg!(&g);
-
+        // g.evaluate_hand(g.players[0].hole_cards.clone());
         // ans = g.raise(g.players[g.turn_marker as usize].clone().name, 100);
         // dbg!(&g);
         // dbg!(ans);
@@ -527,6 +855,193 @@ mod tests {
         // ans = g.raise(g.players[g.turn_marker as usize].clone(), 950);
         // dbg!(&g);
         // End Raise Tests
+
+
+        // let c1 = card::Card::new(Rank::Ace, Suit::Club);
+        // let c2 = card::Card::new(Rank::King, Suit::Club);
+        // let c3 = card::Card::new(Rank::Queen, Suit::Club);
+        // let c4 = card::Card::new(Rank::Jack, Suit::Club);
+        // let c5 = card::Card::new(Rank::Ten, Suit::Club);
+        //
+        // let c6 = card::Card::new(Rank::Ace, Suit::Heart);
+        // let c7 = card::Card::new(Rank::Ace, Suit::Diamond);
+        // let c8 = card::Card::new(Rank::Ace, Suit::Spade);
+        //
+        // let c9 = card::Card::new(Rank::King, Suit::Heart);
+        //
+        // let c10 = card::Card::new(Rank::Nine, Suit::Club);
+        //
+        // let c11 = card::Card::new(Rank::Two, Suit::Heart);
+        // let c12 = card::Card::new(Rank::Three, Suit::Diamond);
+        // let c13 = card::Card::new(Rank::Four, Suit::Spade);
+        // let c14 = card::Card::new(Rank::Five, Suit::Club);
+        //
+        // let c15 = card::Card::new(Rank::Two, Suit::Club);
+        // let c16 = card::Card::new(Rank::Three, Suit::Club);
+        // let c17 = card::Card::new(Rank::Four, Suit::Club);
+        //
+        // let c18 = card::Card::new(Rank::Six, Suit::Club);
+        // let c19 = card::Card::new(Rank::Seven, Suit::Club);
+
+        // let c20 = card::Card::new(Rank::Two, Suit::Club);
+        // let c21 = card::Card::new(Rank::Two, Suit::Diamond);
+        // let c22 = card::Card::new(Rank::Two, Suit::Spade);
+        //
+        // let c23 = card::Card::new(Rank::Eight, Suit::Heart);
+        // let c24 = card::Card::new(Rank::Eight, Suit::Spade);
+        //
+        // let c25 = card::Card::new(Rank::Ace, Suit::Spade);
+        // let c26 = card::Card::new(Rank::King, Suit::Heart);
+        //
+        // let mut board2 = Vec::new();
+        // let mut hb2 = Vec::new();
+        //
+        // board2.push(c20);
+        // board2.push(c21);
+        // board2.push(c22);
+        // board2.push(c23);
+        // board2.push(c24);
+        //
+        // hb2.push(c25);
+        // hb2.push(c26);
+        //
+        // g.board = board2;
+        //
+        // g.evaluate_hand(hb2);
+
+
+
+
+
+
+
+        // let mut board1 = Vec::new();
+        // let mut hb1 = Vec::new();
+        //
+        // board1.push(c1);
+        // board1.push(c19);
+        // board1.push(c14);
+        // board1.push(c15);
+        // board1.push(c16);
+        //
+        // hb1.push(c17);
+        // hb1.push(c18);
+        //
+        // g.board = board1;
+        //
+        // g.evaluate_hand(hb1);
+
+        //
+        //
+        // // straight flush
+        // let mut hand1 = Vec::new();
+        // hand1.push(c1.clone());
+        // hand1.push(c3.clone());
+        // hand1.push(c5.clone());
+        // hand1.push(c4.clone());
+        // hand1.push(c2.clone());
+        //
+        // let rank1 = g.rank_five_card_combo(hand1.clone());
+        // dbg!(rank1);
+        //
+        // // quads
+        // let mut hand2 = Vec::new();
+        // hand2.push(c1.clone());
+        // hand2.push(c2.clone());
+        // hand2.push(c6.clone());
+        // hand2.push(c7.clone());
+        // hand2.push(c8.clone());
+        //
+        // let rank2 = g.rank_five_card_combo(hand2.clone());
+        // dbg!(rank2);
+        //
+        // // boat
+        // let mut hand3 = Vec::new();
+        // hand3.push(c1.clone());
+        // hand3.push(c2.clone());
+        // hand3.push(c6.clone());
+        // hand3.push(c7.clone());
+        // hand3.push(c9.clone());
+        //
+        // let rank3 = g.rank_five_card_combo(hand3.clone());
+        // dbg!(rank3);
+        //
+        // // flush
+        // let mut hand4 = Vec::new();
+        // hand4.push(c1.clone());
+        // hand4.push(c3.clone());
+        // hand4.push(c4.clone());
+        // hand4.push(c5.clone());
+        // hand4.push(c10.clone());
+        //
+        // let rank4 = g.rank_five_card_combo(hand4.clone());
+        // dbg!(rank4);
+        //
+        // // straight
+        // let mut hand5 = Vec::new();
+        // hand5.push(c1.clone());
+        // hand5.push(c3.clone());
+        // hand5.push(c4.clone());
+        // hand5.push(c5.clone());
+        // hand5.push(c9.clone());
+        //
+        // let rank5 = g.rank_five_card_combo(hand5.clone());
+        // dbg!(rank5);
+        //
+        // // trips
+        // let mut hand6 = Vec::new();
+        // hand6.push(c6.clone());
+        // hand6.push(c8.clone());
+        // hand6.push(c7.clone());
+        // hand6.push(c2.clone());
+        // hand6.push(c10.clone());
+        //
+        // let rank6 = g.rank_five_card_combo(hand6.clone());
+        // dbg!(rank6);
+        //
+        // // two pair
+        // let mut hand7 = Vec::new();
+        // hand7.push(c6.clone());
+        // hand7.push(c8.clone());
+        // hand7.push(c5.clone());
+        // hand7.push(c2.clone());
+        // hand7.push(c9.clone());
+        //
+        // let rank7 = g.rank_five_card_combo(hand7.clone());
+        // dbg!(rank7);
+        //
+        // // pair
+        // let mut hand8 = Vec::new();
+        // hand8.push(c10.clone());
+        // hand8.push(c8.clone());
+        // hand8.push(c5.clone());
+        // hand8.push(c2.clone());
+        // hand8.push(c9.clone());
+        //
+        // let rank8 = g.rank_five_card_combo(hand8.clone());
+        // dbg!(rank8);
+        //
+        // // Ahigh straight
+        // let mut hand9 = Vec::new();
+        // hand9.push(c13.clone());
+        // hand9.push(c11.clone());
+        // hand9.push(c14.clone());
+        // hand9.push(c1.clone());
+        // hand9.push(c12.clone());
+        //
+        // let rank9 = g.rank_five_card_combo(hand9.clone());
+        // dbg!(rank9);
+        //
+        // // a high straight flush
+        // let mut hand10 = Vec::new();
+        // hand10.push(c17.clone());
+        // hand10.push(c16.clone());
+        // hand10.push(c14.clone());
+        // hand10.push(c1.clone());
+        // hand10.push(c15.clone());
+        //
+        // let rank10 = g.rank_five_card_combo(hand10.clone());
+        // dbg!(rank10);
 
 
     }
