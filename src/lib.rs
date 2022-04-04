@@ -575,6 +575,11 @@ impl Game {
         self.place_blind(self.big_blind);
     }
 
+
+    fn set_big_blind(&mut self, blind: u64) {
+        self.big_blind = blind;
+    }
+
     fn increment_turn(&mut self) {
         if self.turn_marker < (self.players.len() - 1) as u64 {
             self.turn_marker += 1;
