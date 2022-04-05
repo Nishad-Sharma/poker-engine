@@ -8,11 +8,10 @@ use itertools::{cloned, Itertools};
 use crate::card::{Card, Rank};
 use crate::HandRanking::{FourOfAKind, StraightFlush};
 
-
 mod card;
 
 #[derive(Eq,PartialEq,Debug,Clone)]
-struct Player {
+pub struct Player {
     pub name: String,
     chip_stack: u64,
     current_bet: u64,
@@ -39,7 +38,7 @@ enum ActionType {
 }
 
 #[derive(Debug,PartialEq,Clone)]
-enum GameStreet {
+pub enum GameStreet {
     PRE,
     FLOP,
     TURN,
@@ -62,7 +61,7 @@ enum HandRanking {
 
 
 #[derive(Debug)]
-struct Action {
+pub struct Action {
     action: ActionType,
     player: Player,
     bet_size: u64,
@@ -70,10 +69,10 @@ struct Action {
 }
 
 #[derive(Debug)]
-struct InvalidActionError;
+pub struct InvalidActionError;
 
 #[derive(Debug)]
-struct Game {
+pub struct Game {
     pub players: Vec<Player>,
     pub start_stack: u64,
     pub button: u64,
@@ -91,15 +90,15 @@ struct Game {
 }
 
 impl Game {
-    fn new(start_stack:u64, big_blind:u64) -> Game {
+    pub fn new(start_stack:u64, big_blind:u64) -> Game {
         Game{players: Vec::with_capacity(9), start_stack, button:0, actions: Vec::new(), big_blind, pot: 0, previous_raise: 0, previous_bet: 0, current_bet: 0, turn_marker: 1, street: GameStreet::PRE, deck: Vec::new(), board: Vec::with_capacity(5), winners: Vec::new() }
     }
 
-    fn add_player(&mut self, name:String) {
+    pub fn add_player(&mut self, name:String) {
         self.players.push(Player::new(name, self.start_stack));
     }
 
-    fn deal_hole_cards(&mut self) {
+    pub fn deal_hole_cards(&mut self) {
         let original_turn_marker = self.turn_marker;
 
         self.turn_marker = self.button+1;
@@ -112,11 +111,26 @@ impl Game {
         self.turn_marker = original_turn_marker;
     }
 
-    fn init_deck(&mut self) {
+    pub fn init_deck(&mut self) {
         self.deck = card::Card::init_deck();
     }
 
-    fn find_winner(&mut self) -> Result<(), InvalidActionError> {
+    pub fn payout_winners(&mut self) {
+        let payout = self.pot / (self.winners.len() as u64);
+        for w in self.winners.iter() {
+            for p in self.players.iter_mut() {
+                if w.name == p.name {
+                    p.chip_stack += payout;
+                }
+            }
+        }
+    }
+
+    pub fn prep_next_hand(&mut self) {
+        self.increment_button();
+    }
+
+    pub fn find_winner(&mut self) -> Result<(), InvalidActionError> {
         if self.street != GameStreet::SHOWDOWN {
             return Err(InvalidActionError);
         }
@@ -570,7 +584,7 @@ impl Game {
     }
 
 
-    fn force_blinds(&mut self) {
+    pub fn force_blinds(&mut self) {
         self.place_blind(self.big_blind/2);
         self.place_blind(self.big_blind);
     }
@@ -588,6 +602,15 @@ impl Game {
         }
     }
 
+    fn increment_button(&mut self) {
+        if self.button < (self.players.len() - 1) as u64 {
+            self.button += 1;
+        } else {
+            self.button = 0;
+        }
+    }
+
+
     fn decrement_turn(&mut self) {
         if self.turn_marker < 1 {
             self.turn_marker = (self.players.len() - 1) as u64;
@@ -596,7 +619,7 @@ impl Game {
         }
     }
 
-    fn check(&mut self, name:String) -> Result<(), InvalidActionError> {
+    pub fn check(&mut self, name:String) -> Result<(), InvalidActionError> {
         if self.players[self.turn_marker as usize].name != name {
             return Err(InvalidActionError)
         }
@@ -615,11 +638,12 @@ impl Game {
         };
         self.actions.push(action);
         self.increment_turn();
+        self.progress_street();
         Ok(())
     }
 
 
-    fn call(&mut self, name:String) -> Result<(), InvalidActionError> {
+    pub fn call(&mut self, name:String) -> Result<(), InvalidActionError> {
         if self.players[self.turn_marker as usize].name != name {
             return Err(InvalidActionError)
         }
@@ -644,10 +668,11 @@ impl Game {
         };
         self.actions.push(action);
         self.increment_turn();
+        self.progress_street();
         Ok(())
     }
 
-    fn fold(&mut self, name:String) -> Result<(), InvalidActionError> {
+    pub fn fold(&mut self, name:String) -> Result<(), InvalidActionError> {
         if self.players[self.turn_marker as usize].name != name {
             return Err(InvalidActionError)
         }
@@ -664,6 +689,7 @@ impl Game {
         };
         self.actions.push(action);
         self.increment_turn();
+        self.progress_street();
         Ok(())
     }
 
@@ -674,7 +700,7 @@ impl Game {
     }
 
 
-    fn raise(&mut self, name:String, bet:u64) -> Result<(), InvalidActionError> {
+    pub fn raise(&mut self, name:String, bet:u64) -> Result<(), InvalidActionError> {
         if self.players[self.turn_marker as usize].name != name {
             return Err(InvalidActionError)
         }
@@ -729,7 +755,7 @@ impl Game {
         };
         self.actions.push(action);
         self.increment_turn();
-
+        self.progress_street();
         Ok(())
     }
 }
@@ -764,7 +790,6 @@ mod tests {
         ans = g.call(g.players[g.turn_marker as usize].clone().name);
         ans = g.call(g.players[g.turn_marker as usize].clone().name);
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        g.progress_street();
         // dbg!(&g);
 
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
@@ -773,7 +798,6 @@ mod tests {
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        g.progress_street();
 
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
@@ -781,7 +805,6 @@ mod tests {
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        g.progress_street();
 
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
@@ -789,9 +812,7 @@ mod tests {
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
         ans = g.check(g.players[g.turn_marker as usize].clone().name);
-        g.progress_street();
 
-        // dbg!(&g);
         dbg!("find winners");
 
         g.find_winner();
